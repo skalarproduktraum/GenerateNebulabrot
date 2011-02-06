@@ -122,7 +122,9 @@ Color HueToRGB(FloatType h, FloatType s, FloatType l) {
     tVec.blue = hk - 1/3;
     
     FloatType* clr = &(tVec.red);
+#ifdef USE_GCD
     #pragma omp parallel for
+#endif
     for(int i=0; i<sizeof(Color); i+=sizeof(Color)/3) {
         clr += i;
         if(*clr < 0.0) {
@@ -148,10 +150,13 @@ Color HueToRGB(FloatType h, FloatType s, FloatType l) {
 
 void MapComplexToColor(ComplexDouble** source, Color** image, int imageSize) {
     pngwriter png(imageSize, imageSize, 0, "out.png");
-    
+#ifdef USE_GCD    
     #pragma omp parallel for
+#endif
     for(unsigned int i = 0; i<imageSize; i++) {
+#ifdef USE_GCD
 	#pragma omp parallel for
+#endif
         for(unsigned int j = 0; j<imageSize; j++) {
             //Color clr = HueToRGB(std::arg(source[i][j])/(4.0*atan(1.0)), 1.0, min(std::abs(source[i][j])/18.0, 1.0));
             png.plotHSV_blend(i, j, 1.0, std::arg(source[i][j])/(1.0*(4.0*atan(1.0))), 1.0, min(std::abs(source[i][j])/10.0, 1.0l));

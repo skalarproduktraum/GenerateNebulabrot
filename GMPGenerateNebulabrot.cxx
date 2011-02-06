@@ -8,8 +8,10 @@
 #include <vector>
 #include <algorithm>
 #include <dispatch/dispatch.h>
+#include <gmp.h>
 #include <mpc.h>
 #include <mpfr.h>
+#include <ext/malloc_allocator.h>
 
 #include "pngwriter.h"
 
@@ -17,7 +19,9 @@ using namespace std;
 
 #define FloatType long double
 #define PRECISION 256
-#define ROUNDMODE whatever
+#define ROUNDMODE MPC_RNDDD 
+#define FROUNDMODE GMP_RNDD 
+
 
 //typedef complex<long double> ComplexDouble;
 typedef mpc_t ComplexDouble;
@@ -29,32 +33,32 @@ struct Color {
 };
 
 int Mandelbrot(ComplexDouble z) {
-    
-    vector<mpc_t> list(0);
-    
+   
+    mpc_t* value_list = (mpc_t*)malloc(1000);
+
     mpc_t y;
     mpc_init3(y, PRECISION, PRECISION);
-    mpc_set(y, z);
+    mpc_set(y, z, ROUNDMODE);
 
-    mpc_t zero;
-    mpc_init3(zero, PRECISION, PRECISION);
-    mpc_set_d_d(zero, 0.0, 0.0, ROUNDMODE);
-
-    list.push_back(zero);
+    mpc_init3(value_list[0], PRECISION, PRECISION);
+    mpc_set_d_d(value_list[0], 0.0, 0.0, ROUNDMODE);
 
     mpfr_t absolute_value;
     mpfr_init2(absolute_value, 512);
-    mpc_abs(absolute_value, list.back(), ROUNDMODE);
+    mpc_abs(absolute_value, value_list[0], FROUNDMODE);
 
     int i;
-    for(i = 0; mpfr_get_ld(absolute_value) < 2.0 && i<1000; i++) {
+    for(i = 0; mpfr_get_ld(absolute_value, FROUNDMODE) < 2.0 && i<1000; i++) {
         //y = std::pow(list.back(), 2) + z;
-	mpc_pow_ld(y, list.back(), 2.0, ROUNDMODE);
+	mpc_pow_ld(y, value_list[i], 2.0, ROUNDMODE);
 	mpc_add(y, y, z, ROUNDMODE);
-        list.push_back(y);
+	mpc_init3(value_list[i+1], PRECISION, PRECISION);
+	mpc_set(value_list[i+1], y, ROUNDMODE);
+	mpc_abs(absolute_value, value_list[i+1], FROUNDMODE);
     }
     
-    return list.size();
+    cout << i << endl;
+    return i;
 }
 
 int CreateNebulabrotArray(mpc_t** image, int imageSize, FloatType xMin, FloatType xMax, FloatType yMin, FloatType yMax) {
@@ -78,24 +82,25 @@ int CreateNebulabrotArray(mpc_t** image, int imageSize, FloatType xMin, FloatTyp
 #else
 	for(FloatType y = yMin; y <= yMax; y += yIntervalStep) {
 #endif
-            if(Mandelbrot(ComplexDouble(x, y)) < 1000) {
+	    mpc_t xy;
+	    mpc_init3(xy, PRECISION, PRECISION);
+	    mpc_set_ld_ld(xy, x, y, ROUNDMODE);
+	    mpc_out_str(NULL, 10, 32, xy, ROUNDMODE);
+
+            if(Mandelbrot(xy) < 1000) {
+	    	mpc_t z;
 		mpc_init3(z, PRECISION, PRECISION);
-		mpc_set_ld(z, 0.0, 0.0, ROUNDMODE);
+		mpc_set_ld_ld(z, 0.0, 0.0, ROUNDMODE);
 
 		mpfr_t absolute_value;
 		mpfr_init2(absolute_value, 2*PRECISION);
-		mpc_abs(absolute_value, z, ROUNDMODE);
-                while(mpfr_get_ld(absolute_value) < 2.0) {
-                    z = std::pow(z, 2) + ComplexDouble(x, y);
-		    mpc_pow_ld(z, z, ROUNDMODE);
-
-		    mpc_t xy;
-		    mpc_init3(xy, PRECISION, PRECISION);
-		    mpc_set_ld_ld(xy, x, y, ROUNDMODE);
+		mpc_abs(absolute_value, z, FROUNDMODE);
+                while(mpfr_get_ld(absolute_value, FROUNDMODE) < 2.0) {
+		    mpc_pow_ld(z, z, 2.0, ROUNDMODE);
 		    mpc_add(z, z, xy, ROUNDMODE);
-                    
-                    int i = floor((imageSize*mpfr_get_ld(mpc_imagref(z))+1.5)/3);
-                    int j = -floor((imageSize*mpfr_get_ld(mpc_realref(z))+2)/3);
+		                        
+                    int i = floor((imageSize*mpfr_get_ld(mpc_imagref(z), FROUNDMODE)+1.5)/3);
+                    int j = -floor((imageSize*mpfr_get_ld(mpc_realref(z), FROUNDMODE)+2)/3);
                     
                     i += floor(imageSize/2);
                     j -= floor(2*imageSize/3);
@@ -108,7 +113,7 @@ int CreateNebulabrotArray(mpc_t** image, int imageSize, FloatType xMin, FloatTyp
                     }
                     
                     if(i < imageSize && j < imageSize && i > 0 && j > 0) {
-			mpc_add(image[i][j], image[i][j], xy);
+			//mpc_add(image[i][j], image[i][j], xy, ROUNDMODE);
                         //matches++;
                     }
                 }
@@ -154,7 +159,6 @@ Color HueToRGB(FloatType h, FloatType s, FloatType l) {
     tVec.blue = hk - 1/3;
     
     FloatType* clr = &(tVec.red);
-    #pragma omp parallel for
     for(int i=0; i<sizeof(Color); i+=sizeof(Color)/3) {
         clr += i;
         if(*clr < 0.0) {
@@ -178,15 +182,25 @@ Color HueToRGB(FloatType h, FloatType s, FloatType l) {
     return tVec;
 }
 
-void MapComplexToColor(ComplexDouble** source, Color** image, int imageSize) {
+void MapComplexToColor(mpc_t** source, Color** image, int imageSize) {
     pngwriter png(imageSize, imageSize, 0, "out.png");
     
-    #pragma omp parallel for
-    for(unsigned int i = 0; i<imageSize; i++) {
-	#pragma omp parallel for
-        for(unsigned int j = 0; j<imageSize; j++) {
+    for(int i = 0; i<imageSize; i++) {
+        for(int j = 0; j<imageSize; j++) {
             //Color clr = HueToRGB(std::arg(source[i][j])/(4.0*atan(1.0)), 1.0, min(std::abs(source[i][j])/18.0, 1.0));
-            png.plotHSV_blend(i, j, 1.0, std::arg(source[i][j])/(1.0*(4.0*atan(1.0))), 1.0, min(std::abs(source[i][j])/10.0, 1.0l));
+	    mpfr_t argument;
+	    mpfr_t absolute_value;
+	    mpfr_init2(argument, 2*PRECISION);
+	    mpfr_init2(absolute_value, 2*PRECISION);
+
+	    mpc_arg(argument, source[i][j], FROUNDMODE);
+	    mpc_abs(absolute_value, source[i][j], FROUNDMODE);
+
+            png.plotHSV_blend(i, j, 1.0, 
+			    mpfr_get_ld(argument, FROUNDMODE)/(1.0*(4.0*atan(1.0))), 
+			    1.0, 
+			    min(mpfr_get_ld(absolute_value, FROUNDMODE)/10.0, 1.0l)
+			    );
             //png.plot(i, j, std::arg(source[i][j])/(4.0*atan(1.0)), min(std::abs(source[i][j])/18.0, 1.0), 1.0);
         }
     }
@@ -199,13 +213,22 @@ void MapComplexToColor(ComplexDouble** source, Color** image, int imageSize) {
 int main(int argc, char** argv) {
     
     int size = int(strtol(argv[1], NULL, 10));
+
+    cout << "STATUS: GMP " << __GNU_MP_VERSION << ", MPFR " << mpfr_get_version() << ", MPC " << mpc_get_version() << endl;
     
-    cout << "STATUS: long double size = " << sizeof(long double) << endl;
-    mpc_t** image = new ComplexDouble*[size];
-    for(unsigned int i = 0; i < size; i++) {
-        image[i] = new ComplexDouble[size];
+    cout << "STATUS: mpc_t size = " << sizeof(mpc_t) << endl;
+    
+    //mpc_t** image = (mpc_t**)malloc(size*sizeof(mpc_t*));
+    //for(int i = 0; i < size; i++) {
+    //    image[i] = (mpc_t*)malloc(size*sizeof(mpc_t));
+    //}
+
+    mpc_t** image = new mpc_t*[size];
+    for(int i = 0; i < size; i++) {
+        image[i] = new mpc_t[size];
     }
-    
+
+
     cout << "STATUS: Now creating complex data array (" << size << ")..." << endl;
     CreateNebulabrotArray(image, size, -2.0, 1.0, -1.5, 1.5);
     
